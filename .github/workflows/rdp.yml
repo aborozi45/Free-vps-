@@ -1,0 +1,98 @@
+name: Windows Cloud RDP
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'   # هر ۶ ساعت؛ ران قبلی را کنسل و تازهسازی میکند
+
+concurrency:
+  group: windows-rdp
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: 1. Enable Remote Desktop & Firewall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Type DWord
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0 -Type DWord
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SecurityLayer' -Value 1 -Type DWord
+          # قاعده صریح فایروال (بهتر از نام گروه که لوکالایز میشود)
+          Remove-NetFirewallRule -DisplayName 'RDP-Tailscale' -ErrorAction SilentlyContinue
+          New-NetFirewallRule -DisplayName 'RDP-Tailscale' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Profile Any | Out-Null
+          try { Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' } catch { Write-Host "DisplayGroup skip" }
+          Restart-Service TermService -Force
+          powercfg /change standby-timeout-ac 0
+          powercfg /change monitor-timeout-ac 0
+
+      - name: 2. Create Admin Account
+        shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pw = if ($env:RDP_PASSWORD) { $env:RDP_PASSWORD } else { 'P@ssw0rd1qazXSW@#' }
+          $sec = ConvertTo-SecureString $pw -AsPlainText -Force
+
+          if (Get-LocalUser -Name 'NvDAdmin' -ErrorAction SilentlyContinue) {
+            Set-LocalUser -Name 'NvDAdmin' -Password $sec -PasswordNeverExpires $true
+          } else {
+            New-LocalUser -Name 'NvDAdmin' -Password $sec -PasswordNeverExpires $true -AccountNeverExpires | Out-Null
+          }
+          Add-LocalGroupMember -Group 'Administrators' -Member 'NvDAdmin' -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'NvDAdmin' -ErrorAction SilentlyContinue
+
+          # حساب پیشفرض رانر هم رمز بگیرد
+          Set-LocalUser -Name 'runneradmin' -Password $sec -PasswordNeverExpires $true
+
+      - name: 3. Install & Connect Tailscale VPN
+        shell: pwsh
+        env:
+          TS_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_CLIENT_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tsExe = 'C:\Program Files\Tailscale\tailscale.exe'
+
+          if (-not (Test-Path $tsExe)) {
+            Invoke-WebRequest 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' -OutFile 'C:\tailscale.msi'
+            Start-Process msiexec -ArgumentList '/i C:\tailscale.msi /quiet /norestart' -Wait
+            Start-Sleep -Seconds 10
+          }
+
+          # OAuth client: هرگز منقضی نمیشود
+          $authKey = "$env:TS_CLIENT_ID`?$env:TS_CLIENT_SECRET"
+
+          & $tsExe up --auth-key="$authKey" --hostname="github-rdp-server" `
+              --advertise-tags=tag:ci --ephemeral --timeout=120s
+          if ($LASTEXITCODE -ne 0) { throw "tailscale up failed ($LASTEXITCODE)" }
+
+          $ts_ip = $null
+          for ($i = 0; $i -lt 30; $i++) {
+            $ts_ip = (& $tsExe ip -4 2>$null | Select-Object -First 1)
+            if ($ts_ip) { break }
+            Start-Sleep -Seconds 2
+          }
+          if (-not $ts_ip) { throw 'Tailscale did not assign an IP' }
+
+          Write-Host ''
+          Write-Host '==================================================' -ForegroundColor Green
+          Write-Host '  >>> RDP SERVER IS READY! <<<' -ForegroundColor Cyan
+          Write-Host "  Tailscale IP : $ts_ip" -ForegroundColor Yellow
+          Write-Host '  Username     : NvDAdmin' -ForegroundColor Yellow
+          Write-Host '  >> mstsc → این IP' -ForegroundColor Magenta
+          Write-Host '==================================================' -ForegroundColor Green
+
+      - name: 4. Keep Server Alive (max ~5h45m)
+        shell: pwsh
+        run: |
+          $max = 345
+          for ($i = 1; $i -le $max; $i++) {
+            Start-Sleep -Seconds 60
+            if ($i % 5 -eq 0) { Write-Host "[$i/$max] min elapsed — remaining $($max - $i)" }
+          }
