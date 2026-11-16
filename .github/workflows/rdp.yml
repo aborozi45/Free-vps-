@@ -3,7 +3,7 @@ name: Windows Cloud RDP
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *'   # هر ۶ ساعت؛ ران قبلی را کنسل و تازهسازی میکند
+    - cron: '0 */6 * * *'   # هر ۶ ساعت؛ ران قبلی را کنسل و تازه‌سازی می‌کند
 
 concurrency:
   group: windows-rdp
@@ -22,10 +22,10 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Type DWord
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0 -Type DWord
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SecurityLayer' -Value 1 -Type DWord
-          # قاعده صریح فایروال (بهتر از نام گروه که لوکالایز میشود)
+          # قاعده صریح فایروال (بهتر از نام گروه که لوکالایز می‌شود)
           Remove-NetFirewallRule -DisplayName 'RDP-Tailscale' -ErrorAction SilentlyContinue
           New-NetFirewallRule -DisplayName 'RDP-Tailscale' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -Profile Any | Out-Null
-          try { Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' } catch { Write-Host "DisplayGroup skip" }
+          try { Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' } catch { Write-Host 'DisplayGroup skip' }
           Restart-Service TermService -Force
           powercfg /change standby-timeout-ac 0
           powercfg /change monitor-timeout-ac 0
@@ -40,21 +40,22 @@ jobs:
           $sec = ConvertTo-SecureString $pw -AsPlainText -Force
 
           if (Get-LocalUser -Name 'NvDAdmin' -ErrorAction SilentlyContinue) {
-            Set-LocalUser -Name 'NvDAdmin' -Password $sec -PasswordNeverExpires $true
+            Set-LocalUser -Name 'NvDAdmin' -Password $sec -PasswordNeverExpires:$true
           } else {
-            New-LocalUser -Name 'NvDAdmin' -Password $sec -PasswordNeverExpires $true -AccountNeverExpires | Out-Null
+            New-LocalUser -Name 'NvDAdmin' -Password $sec -PasswordNeverExpires -AccountNeverExpires | Out-Null
           }
+
           Add-LocalGroupMember -Group 'Administrators' -Member 'NvDAdmin' -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group 'Remote Desktop Users' -Member 'NvDAdmin' -ErrorAction SilentlyContinue
 
-          # حساب پیشفرض رانر هم رمز بگیرد
-          Set-LocalUser -Name 'runneradmin' -Password $sec -PasswordNeverExpires $true
+          # حساب پیش‌فرض رانر هم رمز بگیرد (بدون این، بعضی ایمیج‌ها RDP را رد می‌کنند)
+          net user runneradmin "$pw"
+          Set-LocalUser -Name 'runneradmin' -PasswordNeverExpires:$true
 
       - name: 3. Install & Connect Tailscale VPN
         shell: pwsh
         env:
-          TS_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          TS_CLIENT_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
           $ErrorActionPreference = 'Stop'
           $tsExe = 'C:\Program Files\Tailscale\tailscale.exe'
@@ -65,11 +66,8 @@ jobs:
             Start-Sleep -Seconds 10
           }
 
-          # OAuth client: هرگز منقضی نمیشود
-          $authKey = "$env:TS_CLIENT_ID`?$env:TS_CLIENT_SECRET"
-
-          & $tsExe up --auth-key="$authKey" --hostname="github-rdp-server" `
-              --advertise-tags=tag:ci --ephemeral --timeout=120s
+          & $tsExe up --auth-key="$env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server" `
+              --ephemeral --timeout=120s
           if ($LASTEXITCODE -ne 0) { throw "tailscale up failed ($LASTEXITCODE)" }
 
           $ts_ip = $null
