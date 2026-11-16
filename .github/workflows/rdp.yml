@@ -1,9 +1,7 @@
 name: Windows Cloud RDP
 
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 */6 * * *'   # هر ۶ ساعت؛ ران قبلی را کنسل و تازه‌سازی می‌کند
+  workflow_dispatch: 
 
 concurrency:
   group: windows-rdp
