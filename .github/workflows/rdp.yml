@@ -54,6 +54,7 @@ jobs:
 
       - name: 3. Install & Connect Tailscale VPN
         shell: pwsh
+        timeout-minutes: 4
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
@@ -66,8 +67,7 @@ jobs:
             Start-Sleep -Seconds 10
           }
 
-          & $tsExe up --auth-key="$env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server" `
-              --ephemeral --timeout=120s
+          & $tsExe up --auth-key="$env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server"
           if ($LASTEXITCODE -ne 0) { throw "tailscale up failed ($LASTEXITCODE)" }
 
           $ts_ip = $null
